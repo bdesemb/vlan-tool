@@ -4,56 +4,139 @@
 """
     Tool for VLAN configuration
 """
-import argparse
-import paramiko
 import re
+import paramiko
 
 USER = "pi"
 PASSWORD = "raspberry"
+SUDO_PASS = PASSWORD
 HOST = "bvrpi.local"
 
 class ClientSSH(object):
+    "Class to handle connection and interaction to the remote"
     def __init__(self, user, password, host):
         self.client = paramiko.SSHClient()
         self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         self.user = user
         self.password = password
         self.host = host
-        
+
     def connect(self):
+        "Establish connection"
         self.client.connect(self.host, username=self.user, password=self.password)
 
     def close(self):
+        "Close the connection to the remote."
         self.client.close()
 
     def getfiles(self):
+        "Get copy of configuration files"
         ftp = self.client.open_sftp()
         ftp.get('/etc/network/interfaces', 'interfaces')
         ftp.get('/etc/dhcpcd.conf', 'dhcpcd.conf')
         ftp.close()
 
     def getvlans(self):
+        "Get already configured vlan"
         _, stdout, _ = self.client.exec_command(\
             "/sbin/ifconfig -s | /usr/bin/awk 'NR>1{print $1}'")
         lines = stdout.readlines()
         vlans = []
         for (i, line) in enumerate(lines):
             lines[i] = line.rstrip()
-            pattern = re.compile(r'eth\d\.(\d)')
-            match = re.match(pattern, line)
-            if (match):
-                vlans.append(match.group(0))
-        print(vlans)
-                
+            p = re.compile(r'eth\d\.(\d)')
+            m = p.match(line)
+            if m:
+                vlans.append(int(m.group(1)))
+        return vlans
+
+    def rebootRemote(self):
+        "Reboot remote host"
+        self.client.exec_command('/sbin/reboot now')
+
+    def checkvlanmodule(self):
+        """Check if vlan module is loaded (must be root)"""
+        stdin, stdout, _ = self.client.exec_command(\
+        'if /usr/bin/sudo /sbin/modinfo 8021q > /dev/null 2> /dev/null;'
+        'then echo 1; else echo 0;fi', timeout=3)
+        stdin.write(SUDO_PASS + '\n')
+        stdin.flush()
+        if stdout.readlines()[0].rstrip() == "0":
+            self.client.exec_command('/usr/bin/sudo /usr/bin/apt-get install vlan &&'
+                                     '/usr/bin/sudo modprobe 8021q')
+
+    def addvlan(self, ids):
+        """ids must be an array"""
+        readinter = open('interfaces', 'r')
+        readdhcp = open('dhcpcd.conf', 'r')
+        ilines = readinter.readlines()
+        dlines = readdhcp.readlines()
+        readinter.close()
+        readdhcp.close()
+
+        writeinter = open('interfaces', 'w')
+        writedhcp = open('dhcpcd.conf', 'w')
+
+        pattern = re.compile(r'#Autoconf')
+        deleteCount = 6
+
+        #Delete vlan config in interfaces file
+        for line in ilines:
+            res = pattern.match(line)
+            if res is None:
+                writeinter.write(line)
+            elif deleteCount == 0:
+                deleteCount = 5
+            else:
+                deleteCount -= 1
+
+        #Delete vlan config in dhcpch.conf file
+        for line in dlines:
+            res = pattern.match(line)
+            if res is None:
+                writedhcp.write(line)
+            elif deleteCount == 0:
+                deleteCount = 5
+            else:
+                deleteCount -= 1
+
+        writeinter.close()
+        writedhcp.close()
+
+        appendinter = open('interfaces', 'r')
+        appenddhcp = open('dhcpcd.conf', 'r')
+        appendinter.write('\n')
+        appenddhcp.write('\n')
+
+        #Add vlans in interfaces and dhcpcd.conf
+        for vid in ids:
+            istr = ("#Autoconf vlan {0}\n"
+                    "auto eth0.{0}\n"
+                    "iface eth0.{0} inet static\n"
+                    "\taddress 192.168.178.222/23\n"
+                    "\tdns-nameservers 8.8.8.8 8.8.4.4\n\n").format(vid)
+            appendinter.write(istr)
+            dstr = ("#Autoconf vlan {0}\n"
+                    "interface eth0.{0}\n"
+                    "static ip_address=192.168.177.222/24\n\n").format(vid)
+            appenddhcp.write(dstr)
 
 
-
-
-parser = argparse.ArgumentParser()
-group = parser.add_mutually_exclusive_group(required=True)
-group.add_argument("--list", action="store_true")
-group.add_argument("--action", choices=["add", "delete"])
-args = parser.parse_args()
-print(args.list)
-
+#------- START -----
 client = ClientSSH(USER, PASSWORD, HOST)
+client.connect()
+print("Connected", flush=True)
+client.getfiles()
+client.checkvlanmodule()
+
+vs = client.getvlans()
+print("Current running vlans are:", vs)
+
+print("Which VLAN id do you want to add?")
+new_id = input()
+
+client.addvlan(new_id)
+
+
+#------- END ------
+client.close()

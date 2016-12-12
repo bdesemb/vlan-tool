@@ -36,6 +36,13 @@ class ClientSSH(object):
         ftp.get('/etc/dhcpcd.conf', 'dhcpcd.conf')
         ftp.close()
 
+    def pushfiles(self):
+        "Push modified files"
+        ftp = self.client.open_sftp()
+        ftp.put('interfaces', '/etc/network/interfaces')
+        ftp.put('dhcpcd.conf', '/etc/dhcpcd.conf')
+        ftp.close()
+
     def getvlans(self):
         "Get already configured vlan"
         _, stdout, _ = self.client.exec_command(\
@@ -77,56 +84,69 @@ class ClientSSH(object):
         writeinter = open('interfaces', 'w')
         writedhcp = open('dhcpcd.conf', 'w')
 
-        pattern = re.compile(r'#Autoconf')
-        deleteCount = 6
+        pattern = re.compile(r'#.*BVAutoConfiguration.*')
 
         #Delete vlan config in interfaces file
+        delCountIn = 6
+        markedLine = False
         for line in ilines:
             res = pattern.match(line)
-            if res is None:
+            if res is None and not markedLine:
                 writeinter.write(line)
-            elif deleteCount == 0:
-                deleteCount = 5
+            elif delCountIn == 0:
+                delCountIn = 6
+                markedLine = False
+            elif markedLine:
+                delCountIn -= 1
             else:
-                deleteCount -= 1
+                markedLine = True
+                delCountIn -= 1
 
         #Delete vlan config in dhcpch.conf file
+        delCountDhcp = 4
+        markedLine = False
         for line in dlines:
             res = pattern.match(line)
-            if res is None:
+            if res is None and not markedLine:
                 writedhcp.write(line)
-            elif deleteCount == 0:
-                deleteCount = 5
+            elif delCountDhcp == 0:
+                delCountDhcp = 4
+                markedLine = False
+            elif markedLine:
+                delCountDhcp -= 1
             else:
-                deleteCount -= 1
+                markedLine = True
+                delCountDhcp -= 1
 
         writeinter.close()
         writedhcp.close()
 
-        appendinter = open('interfaces', 'r')
-        appenddhcp = open('dhcpcd.conf', 'r')
+        appendinter = open('interfaces', 'a')
+        appenddhcp = open('dhcpcd.conf', 'a')
         appendinter.write('\n')
         appenddhcp.write('\n')
 
         #Add vlans in interfaces and dhcpcd.conf
         for vid in ids:
-            istr = ("#Autoconf vlan {0}\n"
+            istr = ("# BVAutoConfiguration vlan {0}\n"
                     "auto eth0.{0}\n"
                     "iface eth0.{0} inet static\n"
                     "\taddress 192.168.178.222/23\n"
                     "\tdns-nameservers 8.8.8.8 8.8.4.4\n\n").format(vid)
             appendinter.write(istr)
-            dstr = ("#Autoconf vlan {0}\n"
+            dstr = ("# BVAutoConfiguration vlan {0}\n"
                     "interface eth0.{0}\n"
-                    "static ip_address=192.168.177.222/24\n\n").format(vid)
+                    "static ip_address=192.168.177.222/23\n\n").format(vid)
             appenddhcp.write(dstr)
+
+        appendinter.close()
+        appenddhcp.close()
 
 
 #------- START -----
 client = ClientSSH(USER, PASSWORD, HOST)
 client.connect()
 print("Connected", flush=True)
-client.getfiles()
 client.checkvlanmodule()
 
 vs = client.getvlans()
@@ -134,9 +154,11 @@ print("Current running vlans are:", vs)
 
 print("Which VLAN id do you want to add?")
 new_id = input()
+vs.append(new_id)
 
-client.addvlan(new_id)
-
+client.addvlan(vs)
+client.pushfiles()
+client.rebootRemote()
 
 #------- END ------
 client.close()

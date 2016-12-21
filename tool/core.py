@@ -29,13 +29,6 @@ class ClientSSH(object):
         "Close the connection to the remote."
         self.client.close()
 
-    def getfiles(self):
-        "Get copy of configuration files"
-        ftp = self.client.open_sftp()
-        ftp.get('/etc/network/interfaces', 'interfaces')
-        ftp.get('/etc/dhcpcd.conf', 'dhcpcd.conf')
-        ftp.close()
-
     def pushfiles(self):
         "Push modified files"
         ftp = self.client.open_sftp()
@@ -51,7 +44,7 @@ class ClientSSH(object):
         vlans = []
         for (i, line) in enumerate(lines):
             lines[i] = line.rstrip()
-            p = re.compile(r'eth\d\.(\d)')
+            p = re.compile(r'eth\d\.(\d+)')
             m = p.match(line)
             if m:
                 vlans.append(int(m.group(1)))
@@ -71,6 +64,7 @@ class ClientSSH(object):
         if stdout.readlines()[0].rstrip() == "0":
             self.client.exec_command('/usr/bin/sudo /usr/bin/apt-get install vlan &&'
                                      '/usr/bin/sudo modprobe 8021q')
+            self.client.exec_command("/usr/bin/sudo /bin/su -c 'echo \"8021q\" >> /etc/modules'")
 
     def addvlan(self, ids):
         """ids must be an array"""
@@ -103,7 +97,7 @@ class ClientSSH(object):
                 delCountIn -= 1
 
         #Delete vlan config in dhcpch.conf file
-        delCountDhcp = 4
+        delCountDhcp = 6
         markedLine = False
         for line in dlines:
             res = pattern.match(line)
@@ -136,8 +130,12 @@ class ClientSSH(object):
             appendinter.write(istr)
             dstr = ("# BVAutoConfiguration vlan {0}\n"
                     "interface eth0.{0}\n"
-                    "static ip_address=192.168.177.222/23\n\n").format(vid)
+                    "static ip_address=192.168.178.222/23\n"
+                    "static routers=192.168.178.1\n"
+                    "static domain_name_servers=192.168.178.1\n\n").format(vid)
             appenddhcp.write(dstr)
+
+            self.client.exec_command('/usr/bin/sudo /sbin/vconfig add eth0 ' + str(vid))
 
         appendinter.close()
         appenddhcp.close()
@@ -146,7 +144,7 @@ class ClientSSH(object):
 #------- START -----
 client = ClientSSH(USER, PASSWORD, HOST)
 client.connect()
-print("Connected", flush=True)
+print("Connected. Please wait...", flush=True)
 client.checkvlanmodule()
 
 vs = client.getvlans()
